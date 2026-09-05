@@ -1,0 +1,18 @@
+{
+  "name": "scrabs-bot",
+  "version": "1.0.0",
+  "description": "Discord bot for Scrabs: submit scores, view leaderboard, daily announcement",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "register-commands": "node deploy-commands.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^17.4.2",
+    "node-cron": "^4.6.0"
+  }
+}
