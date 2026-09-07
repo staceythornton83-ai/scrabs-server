@@ -50,10 +50,16 @@ async function registerCommands() {
   }
 }
 
+// Must match game.js exactly: the daily reset is anchored to a fixed AEST
+// offset (UTC+10), not UTC or the server's own local time, so the bot and
+// every player's browser agree on the same "today" at the same instant.
+// Deliberately not daylight-saving-aware — see game.js for why.
+const RESET_OFFSET_MS = 10 * 60 * 60 * 1000;
 const EPOCH = Date.UTC(2026, 0, 1); // must match game.js's Puzzle #1 date
-function puzzleNumber(date = new Date()) {
-  const startOfDayUTC = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
-  return Math.floor((startOfDayUTC - EPOCH) / 86400000) + 1;
+function puzzleNumber() {
+  const shifted = new Date(Date.now() + RESET_OFFSET_MS);
+  const startOfDayShifted = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate());
+  return Math.floor((startOfDayShifted - EPOCH) / 86400000) + 1;
 }
 
 function parseShareText(text) {
@@ -65,7 +71,9 @@ function parseShareText(text) {
   const total = Number(headerMatch[2]);
   const words = [];
   for (const line of lines.slice(1)) {
-    const m = line.match(/([A-Za-z]+)\s*\((\d+)\)\s*$/);
+    // matches "WORD (score)" at the start of the line, ignoring anything
+    // that follows (e.g. the bonus-tile emoji tacked on after the score)
+    const m = line.match(/^([A-Za-z]+)\s*\((\d+)\)/);
     if (m) words.push({ word: m[1].toLowerCase(), score: Number(m[2]) });
   }
   return { puzzleNo, total, words };
@@ -94,8 +102,13 @@ client.once('ready', async () => {
   await registerCommands();
 
   if (ANNOUNCE_CHANNEL_ID) {
-    // Post the daily reminder at 00:05 UTC, five minutes after the puzzle rolls over.
-    cron.schedule('5 0 * * *', async () => {
+    // The puzzle itself still rolls over at midnight AEST (see the reset
+    // math above), but the announcement waits until a reasonable morning
+    // hour so nobody's phone buzzes at midnight — same reason Wordle's own
+    // bot posts its recap around 6am rather than right at rollover.
+    // Brisbane never observes daylight saving, so this stays a fixed
+    // UTC+10 instant year-round.
+    cron.schedule('0 6 * * *', async () => {
       try {
         const channel = await client.channels.fetch(ANNOUNCE_CHANNEL_ID);
         const no = puzzleNumber();
@@ -103,7 +116,7 @@ client.once('ready', async () => {
       } catch (err) {
         console.error('Daily announcement failed:', err);
       }
-    }, { timezone: 'UTC' });
+    }, { timezone: 'Australia/Brisbane' });
   }
 });
 
@@ -142,6 +155,7 @@ client.on('interactionCreate', async (interaction) => {
 
   if (interaction.commandName === 'scrabs-leaderboard') {
     const puzzleNo = interaction.options.getInteger('puzzle') || puzzleNumber();
+    const isPastPuzzle = puzzleNo < puzzleNumber();
     try {
       const data = await fetchLeaderboard(interaction.guildId, puzzleNo);
       if (!data.leaderboard.length) {
@@ -149,12 +163,23 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       const medals = ['🥇', '🥈', '🥉'];
-      const lines = data.leaderboard.map((row, i) =>
-        `${medals[i] || `${i + 1}.`} **${row.displayName}** — ${row.total} pts`);
+      const lines = data.leaderboard.map((row, i) => {
+        const rank = `${medals[i] || `${i + 1}.`} **${row.displayName}** — ${row.total} pts`;
+        // Only reveal the actual words once this puzzle's 24-hour window is
+        // over, so nobody still playing today's puzzle gets spoiled.
+        if (isPastPuzzle && Array.isArray(row.words) && row.words.length) {
+          const wordList = row.words.map(w => `${w.word.toUpperCase()} (${w.score})`).join(', ');
+          return `${rank}\n${wordList}`;
+        }
+        return rank;
+      });
       const embed = new EmbedBuilder()
         .setTitle(`Scrabs #${puzzleNo} leaderboard`)
-        .setDescription(lines.join('\n'))
+        .setDescription(lines.join('\n\n'))
         .setColor(0xc9a227);
+      if (!isPastPuzzle) {
+        embed.setFooter({ text: "Words reveal here once today's puzzle ends." });
+      }
       await interaction.reply({ embeds: [embed] });
     } catch (err) {
       console.error(err);
