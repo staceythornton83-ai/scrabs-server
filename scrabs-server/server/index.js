@@ -8,6 +8,11 @@ app.use(cors());
 app.use(express.json());
 
 const API_KEY = process.env.BOT_API_KEY || null;
+// Set on Render only — a Discord Channel Webhook URL, never sent to the
+// browser. Lets the server announce a new score in Discord itself, so the
+// website's automatic submission still shows up in chat without needing
+// the bot (or any client-side secret) involved at all.
+const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || null;
 
 function requireBotKey(req, res, next) {
   if (!API_KEY) return next(); // no key configured, open (fine for local dev only)
@@ -16,16 +21,44 @@ function requireBotKey(req, res, next) {
   next();
 }
 
+async function announceScore({ displayName, total, puzzleNo }) {
+  if (!WEBHOOK_URL) return;
+  try {
+    await fetch(WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: `🎉 **${displayName}** just scored **${total} pts** on Scrabs #${puzzleNo}!` }),
+    });
+  } catch (err) {
+    console.error('Discord webhook announcement failed:', err.message);
+  }
+}
+
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Called by the Discord bot after it parses a pasted share block.
-app.post('/api/scores', requireBotKey, (req, res) => {
-  const { guildId, puzzleNo, discordUserId, displayName, total, words } = req.body || {};
+// Called either by the Discord bot after parsing a pasted share block, or
+// directly by the website itself the moment a player finishes today's game
+// (that's the whole point — no manual copy/paste needed for either path).
+// No API key check here on purpose: a public webpage can never hold a secret
+// safely, so this route validates/sanitizes every field itself instead.
+app.post('/api/scores', (req, res) => {
+  let { guildId, puzzleNo, discordUserId, displayName, total, words } = req.body || {};
   if (!guildId || !puzzleNo || !discordUserId || !displayName || typeof total !== 'number') {
     return res.status(400).json({ error: 'missing or invalid fields' });
   }
+  // Basic sanity bounds now that this is reachable directly from any
+  // browser, not just the trusted bot — keeps garbage out of the DB and
+  // out of the Discord announcement below.
+  displayName = String(displayName).slice(0, 40);
+  total = Math.max(0, Math.min(1000, Math.floor(total)));
+  puzzleNo = Math.floor(Number(puzzleNo));
+  if (!Number.isFinite(puzzleNo) || puzzleNo <= 0) {
+    return res.status(400).json({ error: 'invalid puzzleNo' });
+  }
+
   upsertScore({ guildId, puzzleNo, discordUserId, displayName, total, words });
   res.json({ ok: true });
+  announceScore({ displayName, total, puzzleNo });
 });
 
 app.get('/api/leaderboard/:guildId/:puzzleNo', (req, res) => {
