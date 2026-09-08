@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const cron = require('node-cron');
 
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:8787';
@@ -60,6 +60,14 @@ function puzzleNumber() {
   const shifted = new Date(Date.now() + RESET_OFFSET_MS);
   const startOfDayShifted = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate());
   return Math.floor((startOfDayShifted - EPOCH) / 86400000) + 1;
+}
+
+// A real Discord button (not just a plain link) — much easier to spot in a
+// busy channel full of chatter and score images than a blue hyperlink.
+function buildPlayButtonRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setLabel('🎮 Play now!').setStyle(ButtonStyle.Link).setURL(GAME_URL),
+  );
 }
 
 function parseShareText(text) {
@@ -123,7 +131,11 @@ client.once('ready', async () => {
       try {
         const channel = await client.channels.fetch(ANNOUNCE_CHANNEL_ID);
         const no = puzzleNumber();
-        await channel.send(`Today's Scrabs (#${no}) is up: ${GAME_URL}\nFour words, one board, 24 hours. Submit with \`/scrabs-submit\` once you're done.`);
+        const embed = new EmbedBuilder()
+          .setTitle(`Today's Scrabs is #${no}`)
+          .setDescription('Four words, one board, 24 hours. Your score logs itself the moment you finish.')
+          .setColor(0xc9a227);
+        await channel.send({ embeds: [embed], components: [buildPlayButtonRow()] });
       } catch (err) {
         console.error('Daily announcement failed:', err);
       }
@@ -136,7 +148,11 @@ client.on('interactionCreate', async (interaction) => {
 
   if (interaction.commandName === 'scrabs-today') {
     const no = puzzleNumber();
-    await interaction.reply(`Today's Scrabs is #${no}: ${GAME_URL}`);
+    const embed = new EmbedBuilder()
+      .setTitle(`Today's Scrabs is #${no}`)
+      .setDescription('Four words, one board, 24 hours.')
+      .setColor(0xc9a227);
+    await interaction.reply({ embeds: [embed], components: [buildPlayButtonRow()] });
     return;
   }
 
