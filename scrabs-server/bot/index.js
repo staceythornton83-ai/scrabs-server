@@ -101,6 +101,17 @@ client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   await registerCommands();
 
+  // The API server is on Render's free tier, which spins down after ~15
+  // minutes idle and can then take 20-50s to wake back up — long enough to
+  // blow past Discord's interaction timeout even with deferReply(). Since
+  // this bot itself runs 24/7 anyway (it's the paid worker), just ping the
+  // server's health check often enough that it never gets the chance to
+  // sleep in the first place.
+  setInterval(() => {
+    fetch(`${API_BASE_URL}/health`).catch((err) => console.error('Keep-alive ping failed:', err.message));
+  }, 10 * 60 * 1000);
+  fetch(`${API_BASE_URL}/health`).catch((err) => console.error('Keep-alive ping failed:', err.message));
+
   if (ANNOUNCE_CHANNEL_ID) {
     // The puzzle itself still rolls over at midnight AEST (see the reset
     // math above), but the announcement waits until a reasonable morning
@@ -133,9 +144,15 @@ client.on('interactionCreate', async (interaction) => {
     const raw = interaction.options.getString('result', true);
     const parsed = parseShareText(raw);
     if (!parsed) {
+      // Pure local check, no API call — safe to reply immediately.
       await interaction.reply({ content: "Couldn't read that. Paste the exact text from the \"Copy results to share\" button.", ephemeral: true });
       return;
     }
+    // Discord only allows 3 seconds before an un-deferred reply times out
+    // ("The application did not respond"). The API below lives on a free
+    // Render instance that can take 20-50s to wake from a cold start, so we
+    // defer first — that buys up to 15 minutes instead of 3 seconds.
+    await interaction.deferReply();
     try {
       await submitScore({
         guildId: interaction.guildId,
@@ -145,10 +162,10 @@ client.on('interactionCreate', async (interaction) => {
         total: parsed.total,
         words: parsed.words,
       });
-      await interaction.reply(`Logged **${parsed.total} pts** for puzzle #${parsed.puzzleNo}. Check \`/scrabs-leaderboard\` to see where that lands.`);
+      await interaction.editReply(`Logged **${parsed.total} pts** for puzzle #${parsed.puzzleNo}. Check \`/scrabs-leaderboard\` to see where that lands.`);
     } catch (err) {
       console.error(err);
-      await interaction.reply({ content: 'Something went wrong saving that score, try again in a bit.', ephemeral: true });
+      await interaction.editReply({ content: 'Something went wrong saving that score, try again in a bit.' });
     }
     return;
   }
@@ -156,10 +173,12 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.commandName === 'scrabs-leaderboard') {
     const puzzleNo = interaction.options.getInteger('puzzle') || puzzleNumber();
     const isPastPuzzle = puzzleNo < puzzleNumber();
+    // Same cold-start risk as scrabs-submit above — defer before the fetch.
+    await interaction.deferReply();
     try {
       const data = await fetchLeaderboard(interaction.guildId, puzzleNo);
       if (!data.leaderboard.length) {
-        await interaction.reply(`No scores logged yet for puzzle #${puzzleNo}. Be the first with \`/scrabs-submit\`.`);
+        await interaction.editReply(`No scores logged yet for puzzle #${puzzleNo}. Be the first with \`/scrabs-submit\`.`);
         return;
       }
       const medals = ['🥇', '🥈', '🥉'];
@@ -180,10 +199,10 @@ client.on('interactionCreate', async (interaction) => {
       if (!isPastPuzzle) {
         embed.setFooter({ text: "Words reveal here once today's puzzle ends." });
       }
-      await interaction.reply({ embeds: [embed] });
+      await interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error(err);
-      await interaction.reply({ content: 'Could not reach the leaderboard right now.', ephemeral: true });
+      await interaction.editReply({ content: 'Could not reach the leaderboard right now.' });
     }
     return;
   }
