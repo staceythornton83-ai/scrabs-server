@@ -41,7 +41,12 @@ function buildPlayButtonComponents() {
 async function announceScore({ displayName, total, puzzleNo }) {
   if (!WEBHOOK_URL) return;
   try {
-    await fetch(WEBHOOK_URL, {
+    // Plain "incoming" webhooks (the kind created from a channel's own
+    // Integrations settings, as opposed to one owned by a bot application)
+    // silently drop a `components` field unless this query param is set —
+    // Discord accepts the request either way (204), it just strips the
+    // button without it, which is why this went unnoticed at first.
+    await fetch(`${WEBHOOK_URL}?with_components=true`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
