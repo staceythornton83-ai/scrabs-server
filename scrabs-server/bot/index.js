@@ -103,6 +103,30 @@ async function fetchLeaderboard(guildId, puzzleNo) {
   return res.json();
 }
 
+// Shared by both the /scrabs-leaderboard command and the automatic morning
+// recap, so the two never drift out of sync with each other.
+function buildLeaderboardEmbed(data, puzzleNo, isPastPuzzle) {
+  const medals = ['🥇', '🥈', '🥉'];
+  const lines = data.leaderboard.map((row, i) => {
+    const rank = `${medals[i] || `${i + 1}.`} **${row.displayName}** — ${row.total} pts`;
+    // Only reveal the actual words once this puzzle's 24-hour window is
+    // over, so nobody still playing today's puzzle gets spoiled.
+    if (isPastPuzzle && Array.isArray(row.words) && row.words.length) {
+      const wordList = row.words.map(w => `${w.word.toUpperCase()} (${w.score})`).join(', ');
+      return `${rank}\n${wordList}`;
+    }
+    return rank;
+  });
+  const embed = new EmbedBuilder()
+    .setTitle(`Scrabs #${puzzleNo} leaderboard`)
+    .setDescription(lines.join('\n\n'))
+    .setColor(0xc9a227);
+  if (!isPastPuzzle) {
+    embed.setFooter({ text: "Words reveal here once today's puzzle ends." });
+  }
+  return embed;
+}
+
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once('ready', async () => {
@@ -136,6 +160,24 @@ client.once('ready', async () => {
           .setDescription('Four words, one board, 24 hours. Your score logs itself the moment you finish.')
           .setColor(0xc9a227);
         await channel.send({ embeds: [embed], components: [buildPlayButtonRow()] });
+
+        // Post yesterday's full leaderboard automatically right after —
+        // this is the part that used to require someone typing
+        // /scrabs-leaderboard by hand. If nobody played, say nothing rather
+        // than posting an empty "no scores" message nobody asked for.
+        const guildId = channel.guildId || (channel.guild && channel.guild.id);
+        if (guildId) {
+          const yesterday = no - 1;
+          try {
+            const data = await fetchLeaderboard(guildId, yesterday);
+            if (data.leaderboard.length) {
+              const recap = buildLeaderboardEmbed(data, yesterday, true);
+              await channel.send({ embeds: [recap] });
+            }
+          } catch (err) {
+            console.error('Automatic leaderboard recap failed:', err);
+          }
+        }
       } catch (err) {
         console.error('Daily announcement failed:', err);
       }
@@ -197,24 +239,7 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply(`No scores logged yet for puzzle #${puzzleNo}. Be the first with \`/scrabs-submit\`.`);
         return;
       }
-      const medals = ['🥇', '🥈', '🥉'];
-      const lines = data.leaderboard.map((row, i) => {
-        const rank = `${medals[i] || `${i + 1}.`} **${row.displayName}** — ${row.total} pts`;
-        // Only reveal the actual words once this puzzle's 24-hour window is
-        // over, so nobody still playing today's puzzle gets spoiled.
-        if (isPastPuzzle && Array.isArray(row.words) && row.words.length) {
-          const wordList = row.words.map(w => `${w.word.toUpperCase()} (${w.score})`).join(', ');
-          return `${rank}\n${wordList}`;
-        }
-        return rank;
-      });
-      const embed = new EmbedBuilder()
-        .setTitle(`Scrabs #${puzzleNo} leaderboard`)
-        .setDescription(lines.join('\n\n'))
-        .setColor(0xc9a227);
-      if (!isPastPuzzle) {
-        embed.setFooter({ text: "Words reveal here once today's puzzle ends." });
-      }
+      const embed = buildLeaderboardEmbed(data, puzzleNo, isPastPuzzle);
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error(err);
