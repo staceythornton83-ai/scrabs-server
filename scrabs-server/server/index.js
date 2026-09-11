@@ -13,6 +13,7 @@ const API_KEY = process.env.BOT_API_KEY || null;
 // website's automatic submission still shows up in chat without needing
 // the bot (or any client-side secret) involved at all.
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || null;
+const GAME_URL = process.env.GAME_URL || 'https://YOUR-USERNAME.github.io/scrabs/';
 
 function requireBotKey(req, res, next) {
   if (!API_KEY) return next(); // no key configured, open (fine for local dev only)
@@ -21,13 +22,32 @@ function requireBotKey(req, res, next) {
   next();
 }
 
+// Raw Discord message-component JSON for a link button — webhooks can send
+// these same as a bot can, and a link-style button needs no interaction
+// handler (Discord just opens the URL client-side). Without this, every
+// score announcement was plain text with no way to jump to the game short
+// of scrolling up to find the one daily post that had the button.
+function buildPlayButtonComponents() {
+  return [
+    {
+      type: 1, // action row
+      components: [
+        { type: 2, style: 5, label: '🎮 Play now!', url: GAME_URL }, // style 5 = link button
+      ],
+    },
+  ];
+}
+
 async function announceScore({ displayName, total, puzzleNo }) {
   if (!WEBHOOK_URL) return;
   try {
     await fetch(WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: `🎉 **${displayName}** just scored **${total} pts** on Scrabs #${puzzleNo}!` }),
+      body: JSON.stringify({
+        content: `🎉 **${displayName}** just scored **${total} pts** on Scrabs #${puzzleNo}!`,
+        components: buildPlayButtonComponents(),
+      }),
     });
   } catch (err) {
     console.error('Discord webhook announcement failed:', err.message);
