@@ -17,6 +17,16 @@ const API_KEY = process.env.BOT_API_KEY || null;
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || null;
 const GAME_URL = process.env.GAME_URL || 'https://YOUR-USERNAME.github.io/scrabs/';
 
+// Must match game.js/bot's index.js exactly: the daily reset is anchored to
+// a fixed AEST offset (UTC+10), not UTC or the server's own local time.
+const RESET_OFFSET_MS = 10 * 60 * 60 * 1000;
+const EPOCH = Date.UTC(2026, 0, 1); // must match game.js's Puzzle #1 date
+function puzzleNumber() {
+  const shifted = new Date(Date.now() + RESET_OFFSET_MS);
+  const startOfDayShifted = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate());
+  return Math.floor((startOfDayShifted - EPOCH) / 86400000) + 1;
+}
+
 function requireBotKey(req, res, next) {
   if (!API_KEY) return next(); // no key configured, open (fine for local dev only)
   const header = req.get('x-api-key');
@@ -104,9 +114,19 @@ app.post('/api/name', requireBotKey, (req, res) => {
   res.json({ ok: true, displayName: name, rowsUpdated });
 });
 
+// Also called directly by the browser now (for the "so far today" percentile
+// on the summary screen) — not just the bot. That's fine for name/score/rank,
+// which are already shown live in Discord via /scrabs-leaderboard before a
+// puzzle ends, but the actual WORDS stay hidden until the puzzle is over
+// (same rule the bot already enforces client-side); redacting them here too
+// closes the gap where a browser could otherwise fetch this endpoint
+// directly and read today's still-live words before the bot would ever show
+// them.
 app.get('/api/leaderboard/:guildId/:puzzleNo', (req, res) => {
   const { guildId, puzzleNo } = req.params;
-  const rows = getLeaderboard(guildId, Number(puzzleNo));
+  const isPastPuzzle = Number(puzzleNo) < puzzleNumber();
+  const rows = getLeaderboard(guildId, Number(puzzleNo))
+    .map((row) => (isPastPuzzle ? row : { ...row, words: [] }));
   res.json({ guildId, puzzleNo: Number(puzzleNo), leaderboard: rows });
 });
 
