@@ -7,7 +7,10 @@ const {
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Raised from the 100kb default: a submitted score can carry the rendered
+// share-card PNG (base64-encoded, so ~33% larger than the ~50-150KB image
+// itself) for the automatic Discord post to attach.
+app.use(express.json({ limit: '2mb' }));
 
 const API_KEY = process.env.BOT_API_KEY || null;
 // Set on Render only — a Discord Channel Webhook URL, never sent to the
@@ -50,22 +53,49 @@ function buildPlayButtonComponents() {
   ];
 }
 
-async function announceScore({ displayName, total, puzzleNo }) {
+async function postToWebhook(payload, cardImage) {
+  // Plain "incoming" webhooks (the kind created from a channel's own
+  // Integrations settings, as opposed to one owned by a bot application)
+  // silently drop a `components` field unless this query param is set —
+  // Discord accepts the request either way (204), it just strips the
+  // button without it, which is why this went unnoticed at first. True
+  // whether the body is plain JSON or the multipart form a file attachment
+  // requires, so it's appended either way.
+  const url = `${WEBHOOK_URL}?with_components=true`;
+  if (cardImage) {
+    // The website renders the same spoiler-safe card "Copy to share"
+    // produces and hands it over as base64 — attaching it here as a real
+    // Discord file (not a link) is what makes it show up inline. Discord
+    // webhooks take this as multipart: the normal JSON payload goes in a
+    // `payload_json` field alongside a `files[0]` field with the image
+    // bytes.
+    const form = new FormData();
+    form.append('payload_json', JSON.stringify(payload));
+    form.append('files[0]', new Blob([Buffer.from(cardImage, 'base64')], { type: 'image/png' }), 'scrabs-score.png');
+    return fetch(url, { method: 'POST', body: form });
+  }
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+async function announceScore({ displayName, total, puzzleNo, cardImage }) {
   if (!WEBHOOK_URL) return;
+  const payload = {
+    content: `🎉 **${displayName}** just scored **${total} pts** on Scrabs #${puzzleNo}!`,
+    components: buildPlayButtonComponents(),
+  };
   try {
-    // Plain "incoming" webhooks (the kind created from a channel's own
-    // Integrations settings, as opposed to one owned by a bot application)
-    // silently drop a `components` field unless this query param is set —
-    // Discord accepts the request either way (204), it just strips the
-    // button without it, which is why this went unnoticed at first.
-    await fetch(`${WEBHOOK_URL}?with_components=true`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: `🎉 **${displayName}** just scored **${total} pts** on Scrabs #${puzzleNo}!`,
-        components: buildPlayButtonComponents(),
-      }),
-    });
+    const res = await postToWebhook(payload, cardImage);
+    if (!res.ok && cardImage) {
+      // Never let an image-attach failure (bad bytes, a Discord-side quirk)
+      // cost the day its announcement entirely — plain text still worked
+      // fine before this feature existed, so fall back to exactly that.
+      console.error('Webhook image attach failed, retrying without the image:', res.status);
+      await postToWebhook(payload, null);
+    }
   } catch (err) {
     console.error('Discord webhook announcement failed:', err.message);
   }
@@ -79,7 +109,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 // No API key check here on purpose: a public webpage can never hold a secret
 // safely, so this route validates/sanitizes every field itself instead.
 app.post('/api/scores', (req, res) => {
-  let { guildId, puzzleNo, discordUserId, displayName, total, words, assisted } = req.body || {};
+  let { guildId, puzzleNo, discordUserId, displayName, total, words, assisted, cardImage } = req.body || {};
   if (!guildId || !puzzleNo || !discordUserId || !displayName || typeof total !== 'number') {
     return res.status(400).json({ error: 'missing or invalid fields' });
   }
@@ -92,12 +122,16 @@ app.post('/api/scores', (req, res) => {
   if (!Number.isFinite(puzzleNo) || puzzleNo <= 0) {
     return res.status(400).json({ error: 'invalid puzzleNo' });
   }
+  // Optional and only ever from the website's own auto-submit (the bot's
+  // /scrabs-submit path never sends one) — a malformed value just means no
+  // image gets attached, not a failed submission.
+  if (typeof cardImage !== 'string' || !cardImage) cardImage = null;
 
   const { displayName: stored } = upsertScore({
     guildId, puzzleNo, discordUserId, displayName, total, words, assisted: !!assisted,
   });
   res.json({ ok: true, displayName: stored });
-  announceScore({ displayName: stored, total, puzzleNo });
+  announceScore({ displayName: stored, total, puzzleNo, cardImage });
 });
 
 // Bot-only: lets a player correct the name attached to all of their scores,
