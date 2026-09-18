@@ -78,20 +78,17 @@ function buildPlayButtonRow() {
 }
 
 function parseShareText(text) {
+  // The spoiler-safe share format spreads puzzle number and total across
+  // separate lines (e.g. "SCRABS #261" / "🌈⬜🟨🟩" / "130 pts") and never
+  // includes per-word text or scores, so there's nothing left to recover
+  // beyond puzzleNo/total — `words` stays empty, which the API accepts.
   const lines = text.trim().split('\n').map(l => l.trim()).filter(Boolean);
-  const header = lines[0] || '';
-  const headerMatch = header.match(/#(\d+)\D+(\d+)\s*pts/i);
-  if (!headerMatch) return null;
-  const puzzleNo = Number(headerMatch[1]);
-  const total = Number(headerMatch[2]);
-  const words = [];
-  for (const line of lines.slice(1)) {
-    // matches "WORD (score)" at the start of the line, ignoring anything
-    // that follows (e.g. the bonus-tile emoji tacked on after the score)
-    const m = line.match(/^([A-Za-z]+)\s*\((\d+)\)/);
-    if (m) words.push({ word: m[1].toLowerCase(), score: Number(m[2]) });
-  }
-  return { puzzleNo, total, words };
+  const puzzleMatch = lines.map(l => l.match(/#(\d+)/)).find(Boolean);
+  const totalMatch = lines.map(l => l.match(/(\d+)\s*pts/i)).find(Boolean);
+  if (!puzzleMatch || !totalMatch) return null;
+  const puzzleNo = Number(puzzleMatch[1]);
+  const total = Number(totalMatch[1]);
+  return { puzzleNo, total, words: [] };
 }
 
 async function submitScore({ guildId, discordUserId, displayName, puzzleNo, total, words }) {
