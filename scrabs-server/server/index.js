@@ -1,7 +1,9 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { upsertScore, getLeaderboard } = require('./db');
+const {
+  upsertScore, getLeaderboard, setPlayerName, alreadyPosted, markPosted,
+} = require('./db');
 
 const app = express();
 app.use(cors());
@@ -67,7 +69,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 // No API key check here on purpose: a public webpage can never hold a secret
 // safely, so this route validates/sanitizes every field itself instead.
 app.post('/api/scores', (req, res) => {
-  let { guildId, puzzleNo, discordUserId, displayName, total, words } = req.body || {};
+  let { guildId, puzzleNo, discordUserId, displayName, total, words, assisted } = req.body || {};
   if (!guildId || !puzzleNo || !discordUserId || !displayName || typeof total !== 'number') {
     return res.status(400).json({ error: 'missing or invalid fields' });
   }
@@ -81,15 +83,41 @@ app.post('/api/scores', (req, res) => {
     return res.status(400).json({ error: 'invalid puzzleNo' });
   }
 
-  upsertScore({ guildId, puzzleNo, discordUserId, displayName, total, words });
-  res.json({ ok: true });
-  announceScore({ displayName, total, puzzleNo });
+  const { displayName: stored } = upsertScore({
+    guildId, puzzleNo, discordUserId, displayName, total, words, assisted: !!assisted,
+  });
+  res.json({ ok: true, displayName: stored });
+  announceScore({ displayName: stored, total, puzzleNo });
+});
+
+// Bot-only: lets a player correct the name attached to all of their scores,
+// past and future. Protected by the same key the bot already sends on
+// /api/scores from its own /scrabs-submit path — a browser never calls this.
+app.post('/api/name', requireBotKey, (req, res) => {
+  const { guildId, discordUserId, displayName } = req.body || {};
+  if (!guildId || !discordUserId || !displayName) {
+    return res.status(400).json({ error: 'missing fields' });
+  }
+  const name = String(displayName).trim().slice(0, 32);
+  if (!name) return res.status(400).json({ error: 'empty name' });
+  const { rowsUpdated } = setPlayerName({ guildId, discordUserId, displayName: name });
+  res.json({ ok: true, displayName: name, rowsUpdated });
 });
 
 app.get('/api/leaderboard/:guildId/:puzzleNo', (req, res) => {
   const { guildId, puzzleNo } = req.params;
   const rows = getLeaderboard(guildId, Number(puzzleNo));
   res.json({ guildId, puzzleNo: Number(puzzleNo), leaderboard: rows });
+});
+
+// Bot-only: the bot claims a puzzle before posting its automatic recap, so
+// a Render restart or an overlapping cron tick can never post it twice.
+app.post('/api/claim-post', requireBotKey, (req, res) => {
+  const { guildId, puzzleNo } = req.body || {};
+  if (!guildId || !puzzleNo) return res.status(400).json({ error: 'missing fields' });
+  if (alreadyPosted(guildId, Number(puzzleNo))) return res.json({ claimed: false });
+  markPosted(guildId, Number(puzzleNo));
+  res.json({ claimed: true });
 });
 
 const PORT = process.env.PORT || 8787;
