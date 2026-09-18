@@ -19,6 +19,13 @@ const COMMANDS = [
         .setDescription('Paste the text from the "Copy results to share" button')
         .setRequired(true)),
   new SlashCommandBuilder()
+    .setName('scrabs-name')
+    .setDescription('Set the name shown on the Scrabs leaderboard — fixes it on past scores too')
+    .addStringOption(opt =>
+      opt.setName('name')
+        .setDescription('The name to show')
+        .setRequired(true)),
+  new SlashCommandBuilder()
     .setName('scrabs-leaderboard')
     .setDescription("Show today's Scrabs leaderboard for this server")
     .addIntegerOption(opt =>
@@ -97,6 +104,26 @@ async function submitScore({ guildId, discordUserId, displayName, puzzleNo, tota
   return res.json();
 }
 
+async function setName({ guildId, discordUserId, displayName }) {
+  const res = await fetch(`${API_BASE_URL}/api/name`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': BOT_API_KEY },
+    body: JSON.stringify({ guildId, discordUserId, displayName }),
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  return res.json();
+}
+
+async function claimPost(guildId, puzzleNo) {
+  const res = await fetch(`${API_BASE_URL}/api/claim-post`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': BOT_API_KEY },
+    body: JSON.stringify({ guildId, puzzleNo }),
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  return res.json();
+}
+
 async function fetchLeaderboard(guildId, puzzleNo) {
   const res = await fetch(`${API_BASE_URL}/api/leaderboard/${guildId}/${puzzleNo}`);
   if (!res.ok) throw new Error(`API error ${res.status}`);
@@ -105,10 +132,13 @@ async function fetchLeaderboard(guildId, puzzleNo) {
 
 // Shared by both the /scrabs-leaderboard command and the automatic morning
 // recap, so the two never drift out of sync with each other.
+// Pure vs Assisted: the ranked board only counts unassisted results, so
+// nobody can outspend their way to the top with Word Jackpot. Assisted
+// results still show, just underneath, unranked.
 function buildLeaderboardEmbed(data, puzzleNo, isPastPuzzle) {
   const medals = ['🥇', '🥈', '🥉'];
-  const lines = data.leaderboard.map((row, i) => {
-    const rank = `${medals[i] || `${i + 1}.`} **${row.displayName}** — ${row.total} pts`;
+  const line = (row, rankLabel) => {
+    const rank = `${rankLabel} **${row.displayName}** — ${row.total} pts`;
     // Only reveal the actual words once this puzzle's 24-hour window is
     // over, so nobody still playing today's puzzle gets spoiled.
     if (isPastPuzzle && Array.isArray(row.words) && row.words.length) {
@@ -116,10 +146,27 @@ function buildLeaderboardEmbed(data, puzzleNo, isPastPuzzle) {
       return `${rank}\n${wordList}`;
     }
     return rank;
-  });
+  };
+
+  const pure = data.leaderboard.filter(r => !r.assisted);
+  const assisted = data.leaderboard.filter(r => r.assisted);
+
+  const sections = [];
+  sections.push(
+    pure.length
+      ? pure.map((row, i) => line(row, medals[i] || `${i + 1}.`)).join('\n\n')
+      : '_No unassisted results yet today._'
+  );
+  if (assisted.length) {
+    sections.push(
+      `\n**Assisted** (used Word Jackpot)\n` +
+      assisted.map((row, i) => line(row, `${i + 1}.`)).join('\n\n')
+    );
+  }
+
   const embed = new EmbedBuilder()
     .setTitle(`Scrabs #${puzzleNo} leaderboard`)
-    .setDescription(lines.join('\n\n'))
+    .setDescription(sections.join('\n\n'))
     .setColor(0xc9a227);
   if (!isPastPuzzle) {
     embed.setFooter({ text: "Words reveal here once today's puzzle ends." });
@@ -169,10 +216,15 @@ client.once('ready', async () => {
         if (guildId) {
           const yesterday = no - 1;
           try {
-            const data = await fetchLeaderboard(guildId, yesterday);
-            if (data.leaderboard.length) {
-              const recap = buildLeaderboardEmbed(data, yesterday, true);
-              await channel.send({ embeds: [recap] });
+            // Claimed in the database first — a Render restart landing on
+            // the same minute, or the cron firing twice, can't double-post.
+            const { claimed } = await claimPost(guildId, yesterday);
+            if (claimed) {
+              const data = await fetchLeaderboard(guildId, yesterday);
+              if (data.leaderboard.length) {
+                const recap = buildLeaderboardEmbed(data, yesterday, true);
+                await channel.send({ embeds: [recap] });
+              }
             }
           } catch (err) {
             console.error('Automatic leaderboard recap failed:', err);
@@ -195,6 +247,30 @@ client.on('interactionCreate', async (interaction) => {
       .setDescription('Four words, one board, 24 hours.')
       .setColor(0xc9a227);
     await interaction.reply({ embeds: [embed], components: [buildPlayButtonRow()] });
+    return;
+  }
+
+  if (interaction.commandName === 'scrabs-name') {
+    const name = interaction.options.getString('name', true).trim().slice(0, 32);
+    if (!name) {
+      await interaction.reply({ content: 'That name is empty, try again.', ephemeral: true });
+      return;
+    }
+    await interaction.deferReply();
+    try {
+      const { rowsUpdated } = await setName({
+        guildId: interaction.guildId,
+        discordUserId: interaction.user.id,
+        displayName: name,
+      });
+      await interaction.editReply(
+        `Your Scrabs name is now **${name}**` +
+        (rowsUpdated ? `, and I've updated it on ${rowsUpdated} past score${rowsUpdated === 1 ? '' : 's'}.` : '.')
+      );
+    } catch (err) {
+      console.error(err);
+      await interaction.editReply({ content: 'Something went wrong saving that name, try again in a bit.' });
+    }
     return;
   }
 
