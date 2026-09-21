@@ -196,7 +196,8 @@ client.once('ready', async () => {
     // Brisbane never observes daylight saving, so this stays a fixed
     // UTC+10 instant year-round.
     cron.schedule('0 6 * * *', async () => {
-      try {
+      console.log('[cron] 6am Brisbane job fired, posting to', ANNOUNCE_CHANNEL_ID);
+            try {
         const channel = await client.channels.fetch(ANNOUNCE_CHANNEL_ID);
         const no = puzzleNumber();
         const embed = new EmbedBuilder()
