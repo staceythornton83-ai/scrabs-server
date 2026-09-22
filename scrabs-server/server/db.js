@@ -1,7 +1,12 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 
-const db = new Database(path.join(__dirname, 'scrabs.db'));
+// DATA_DIR points at Render's persistent disk mount (set in the service's
+// Environment tab). Without it the DB lives next to the source code on the
+// container's ephemeral filesystem, which gets wiped on every deploy/restart
+// on Render's free compute tier — that silent wipe was the actual cause of
+// scores "vanishing" from the leaderboard.
+const db = new Database(path.join(process.env.DATA_DIR || __dirname, 'scrabs.db'));
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS scores (
