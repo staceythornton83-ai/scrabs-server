@@ -19,6 +19,12 @@ const API_KEY = process.env.BOT_API_KEY || null;
 // the bot (or any client-side secret) involved at all.
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || null;
 const GAME_URL = process.env.GAME_URL || 'https://YOUR-USERNAME.github.io/scrabs/';
+// The only Discord server this webhook may ever announce into. /api/scores
+// is shared by every guildId that submits to this server (including
+// STACKD's 'stackd-app-leaderboard') - the DB rows are already scoped per
+// guildId, but the announcement below previously fired for ANY submission
+// regardless of guildId, leaking non-Scrabs scores into the real channel.
+const REAL_SCRABS_GUILD_ID = '1482127702176698408';
 
 // Must match game.js/bot's index.js exactly: the daily reset is anchored to
 // a fixed AEST offset (UTC+10), not UTC or the server's own local time.
@@ -131,7 +137,9 @@ app.post('/api/scores', (req, res) => {
     guildId, puzzleNo, discordUserId, displayName, total, words, assisted: !!assisted,
   });
   res.json({ ok: true, displayName: stored });
-  announceScore({ displayName: stored, total, puzzleNo, cardImage });
+  if (guildId === REAL_SCRABS_GUILD_ID) {
+    announceScore({ displayName: stored, total, puzzleNo, cardImage });
+  }
 });
 
 // Bot-only: lets a player correct the name attached to all of their scores,
