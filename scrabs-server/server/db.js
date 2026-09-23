@@ -40,6 +40,18 @@ db.exec(`
     posted_at INTEGER NOT NULL,
     PRIMARY KEY (guild_id, puzzle_no)
   );
+
+  -- Private STACKD groups (e.g. "invite your sister"), independent of
+  -- Discord entirely. A group's code doubles as the guild_id its scores get
+  -- stored under ('stackd-group-<code>'), so scores/leaderboard need no
+  -- schema of their own for this — this table exists purely so a typo'd
+  -- join code fails with a clear error instead of silently landing in an
+  -- empty group, and so the app can show who made the group and when.
+  CREATE TABLE IF NOT EXISTS groups (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 `);
 
 // Migrate databases created before the `assisted` column existed.
@@ -107,6 +119,20 @@ function getLeaderboard(guildId, puzzleNo) {
   }));
 }
 
+/* ---------- private STACKD groups ---------- */
+function createGroup(code, name) {
+  // UNIQUE on code means a collision throws rather than silently
+  // overwriting someone else's group — the caller retries with a new
+  // random code when that happens.
+  db.prepare('INSERT INTO groups (code, name, created_at) VALUES (?, ?, ?)')
+    .run(code, name, Date.now());
+}
+
+function getGroup(code) {
+  const row = db.prepare('SELECT code, name, created_at AS createdAt FROM groups WHERE code = ?').get(code);
+  return row || null;
+}
+
 /* ---------- post-once bookkeeping for the automated daily post ---------- */
 function alreadyPosted(guildId, puzzleNo) {
   return !!db.prepare('SELECT 1 FROM posted WHERE guild_id = ? AND puzzle_no = ?')
@@ -119,5 +145,5 @@ function markPosted(guildId, puzzleNo) {
 
 module.exports = {
   db, upsertScore, getLeaderboard, setPlayerName, getPlayerName,
-  alreadyPosted, markPosted,
+  alreadyPosted, markPosted, createGroup, getGroup,
 };
