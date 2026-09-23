@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const {
   upsertScore, getLeaderboard, setPlayerName, alreadyPosted, markPosted,
+  createGroup, getGroup,
 } = require('./db');
 
 const app = express();
@@ -19,9 +20,10 @@ const API_KEY = process.env.BOT_API_KEY || null;
 // the bot (or any client-side secret) involved at all.
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || null;
 const GAME_URL = process.env.GAME_URL || 'https://YOUR-USERNAME.github.io/scrabs/';
+
 // The only Discord server this webhook may ever announce into. /api/scores
 // is shared by every guildId that submits to this server (including
-// STACKD's 'stackd-app-leaderboard') - the DB rows are already scoped per
+// STACKD's 'stackd-app-leaderboard') — the DB rows are already scoped per
 // guildId, but the announcement below previously fired for ANY submission
 // regardless of guildId, leaking non-Scrabs scores into the real channel.
 const REAL_SCRABS_GUILD_ID = '1482127702176698408';
@@ -58,7 +60,6 @@ function buildPlayButtonComponents() {
     },
   ];
 }
-
 async function postToWebhook(payload, cardImage) {
   // Plain "incoming" webhooks (the kind created from a channel's own
   // Integrations settings, as opposed to one owned by a bot application)
@@ -170,6 +171,44 @@ app.get('/api/leaderboard/:guildId/:puzzleNo', (req, res) => {
   const rows = getLeaderboard(guildId, Number(puzzleNo))
     .map((row) => (isPastPuzzle ? row : { ...row, words: [] }));
   res.json({ guildId, puzzleNo: Number(puzzleNo), leaderboard: rows });
+});
+
+// STACKD-only: private groups, entirely separate from Discord. A group's
+// code doubles as its guildId once prefixed by the client
+// ('stackd-group-<code>') — scores/leaderboard need no new schema for
+// this, this table just exists so a mistyped join code gets a real error
+// instead of silently landing in an empty group.
+const GROUP_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I/L — easy to read aloud or text
+function randomGroupCode(length = 6) {
+  let code = '';
+  for (let i = 0; i < length; i++) {
+    code += GROUP_CODE_CHARS[Math.floor(Math.random() * GROUP_CODE_CHARS.length)];
+  }
+  return code;
+}
+
+app.post('/api/groups', (req, res) => {
+  let { name } = req.body || {};
+  name = String(name || '').trim().slice(0, 40);
+  if (!name) return res.status(400).json({ error: 'missing group name' });
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = randomGroupCode();
+    try {
+      createGroup(code, name);
+      return res.json({ code, name });
+    } catch (e) {
+      if (!/UNIQUE/.test(e.message)) throw e; // genuine collision — retry with a fresh code
+    }
+  }
+  res.status(500).json({ error: 'could not generate a unique group code, try again' });
+});
+
+app.get('/api/groups/:code', (req, res) => {
+  const code = String(req.params.code || '').trim().toUpperCase();
+  const group = getGroup(code);
+  if (!group) return res.status(404).json({ error: 'group not found' });
+  res.json(group);
 });
 
 // Bot-only: the bot claims a puzzle before posting its automatic recap, so
