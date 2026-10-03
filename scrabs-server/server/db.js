@@ -54,11 +54,18 @@ db.exec(`
   );
 `);
 
-// Migrate databases created before the `assisted` column existed.
+// Migrate databases created before the `assisted` / `streak` columns existed.
 {
   const cols = new Set(db.prepare('PRAGMA table_info(scores)').all().map(c => c.name));
   if (!cols.has('assisted')) {
     db.exec('ALTER TABLE scores ADD COLUMN assisted INTEGER NOT NULL DEFAULT 0');
+  }
+  // The player's personal daily-play streak at the moment this score was
+  // submitted (STACKD only, for now — see stackd-app/www/app.js's
+  // wallet.streak; SCRABS's own client doesn't send this, so its rows just
+  // default to 0, which the bot already treats as "don't show a badge").
+  if (!cols.has('streak')) {
+    db.exec('ALTER TABLE scores ADD COLUMN streak INTEGER NOT NULL DEFAULT 0');
   }
 }
 
@@ -86,21 +93,22 @@ function getPlayerName(guildId, discordUserId) {
 }
 
 /* ---------- scores ---------- */
-function upsertScore({ guildId, puzzleNo, discordUserId, displayName, total, words, assisted }) {
+function upsertScore({ guildId, puzzleNo, discordUserId, displayName, total, words, assisted, streak }) {
   // A name the player has explicitly chosen always wins over whatever the
   // client happened to send, so a rename sticks for every future score too.
   const chosen = getPlayerName(guildId, discordUserId) || displayName;
   db.prepare(`
-    INSERT INTO scores (guild_id, puzzle_no, discord_user_id, display_name, total, words, assisted, submitted_at)
-    VALUES (@guildId, @puzzleNo, @discordUserId, @displayName, @total, @words, @assisted, @submittedAt)
+    INSERT INTO scores (guild_id, puzzle_no, discord_user_id, display_name, total, words, assisted, streak, submitted_at)
+    VALUES (@guildId, @puzzleNo, @discordUserId, @displayName, @total, @words, @assisted, @streak, @submittedAt)
     ON CONFLICT(guild_id, puzzle_no, discord_user_id)
     DO UPDATE SET total = excluded.total, words = excluded.words,
                   display_name = excluded.display_name, assisted = excluded.assisted,
-                  submitted_at = excluded.submitted_at
+                  streak = excluded.streak, submitted_at = excluded.submitted_at
   `).run({
     guildId, puzzleNo, discordUserId, displayName: chosen, total,
     words: JSON.stringify(words || []),
     assisted: assisted ? 1 : 0,
+    streak: Number.isFinite(streak) ? streak : 0,
     submittedAt: Date.now(),
   });
   return { displayName: chosen };
@@ -108,7 +116,7 @@ function upsertScore({ guildId, puzzleNo, discordUserId, displayName, total, wor
 
 function getLeaderboard(guildId, puzzleNo) {
   return db.prepare(`
-    SELECT display_name AS displayName, total, words, assisted, submitted_at AS submittedAt
+    SELECT display_name AS displayName, total, words, assisted, streak, submitted_at AS submittedAt
     FROM scores
     WHERE guild_id = ? AND puzzle_no = ?
     ORDER BY total DESC, submitted_at ASC

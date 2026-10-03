@@ -116,7 +116,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 // No API key check here on purpose: a public webpage can never hold a secret
 // safely, so this route validates/sanitizes every field itself instead.
 app.post('/api/scores', (req, res) => {
-  let { guildId, puzzleNo, discordUserId, displayName, total, words, assisted, cardImage } = req.body || {};
+  let { guildId, puzzleNo, discordUserId, displayName, total, words, assisted, streak, cardImage } = req.body || {};
   if (!guildId || !puzzleNo || !discordUserId || !displayName || typeof total !== 'number') {
     return res.status(400).json({ error: 'missing or invalid fields' });
   }
@@ -129,13 +129,18 @@ app.post('/api/scores', (req, res) => {
   if (!Number.isFinite(puzzleNo) || puzzleNo <= 0) {
     return res.status(400).json({ error: 'invalid puzzleNo' });
   }
+  // Optional — only STACKD's client sends this today (see stackd-app/www/
+  // app.js, wallet.streak). SCRABS's own client never sends it, so its rows
+  // just land at the default below, which the bot already treats as "no
+  // badge" rather than a fake "day 0" streak.
+  streak = Math.max(0, Math.min(9999, Math.floor(Number(streak)) || 0));
   // Optional and only ever from the website's own auto-submit (the bot's
   // /scrabs-submit path never sends one) — a malformed value just means no
   // image gets attached, not a failed submission.
   if (typeof cardImage !== 'string' || !cardImage) cardImage = null;
 
   const { displayName: stored } = upsertScore({
-    guildId, puzzleNo, discordUserId, displayName, total, words, assisted: !!assisted,
+    guildId, puzzleNo, discordUserId, displayName, total, words, assisted: !!assisted, streak,
   });
   res.json({ ok: true, displayName: stored });
   if (guildId === REAL_SCRABS_GUILD_ID) {
