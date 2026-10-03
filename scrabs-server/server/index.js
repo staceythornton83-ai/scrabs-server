@@ -60,7 +60,6 @@ function buildPlayButtonComponents() {
     },
   ];
 }
-
 async function postToWebhook(payload, cardImage) {
   // Plain "incoming" webhooks (the kind created from a channel's own
   // Integrations settings, as opposed to one owned by a bot application)
